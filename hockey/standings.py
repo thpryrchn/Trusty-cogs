@@ -2,51 +2,33 @@ from datetime import datetime
 import aiohttp
 import discord
 from .constants import BASE_URL, TEAMS
-from .helper import hockey_config
+from .abc import MixinMeta
+from dataclasses import dataclass
 import logging
+from typing import List
 
 log = logging.getLogger("red.Hockey")
 
 
-class Standings:
-    def __init__(
-        self,
-        name: str,
-        division: str,
-        conference: str,
-        division_rank: int,
-        conference_rank: int,
-        league_rank: int,
-        wins: int,
-        losses: int,
-        ot: int,
-        gp: int,
-        pts: int,
-        streak: int,
-        streak_type: str,
-        goals: int,
-        gaa: int,
-        wc: str,
-        last_updated: str,
-    ):
-        super().__init__()
-        self.name = name
-        self.division = division
-        self.conference = conference
-        self.division_rank = division_rank
-        self.conference_rank = conference_rank
-        self.league_rank = league_rank
-        self.wins = wins
-        self.losses = losses
-        self.ot = ot
-        self.gp = gp
-        self.pts = pts
-        self.streak = streak
-        self.streak_type = streak_type
-        self.goals = goals
-        self.gaa = gaa
-        self.wc = wc
-        self.last_updated = datetime.strptime(last_updated, "%Y-%m-%dT%H:%M:%SZ")
+@dataclass
+class StandingsData:
+    name: str
+    division: str
+    conference: str
+    division_rank: int
+    conference_rank: int
+    league_rank: int
+    wins: int
+    losses: int
+    ot: int
+    gp: int
+    pts: int
+    streak: int
+    streak_type: str
+    goals: int
+    gaa: int
+    wc: str
+    last_updated: datetime
 
     def to_json(self) -> dict:
         return {
@@ -68,110 +50,6 @@ class Standings:
             "wc": self.wc,
             "last_updated": self.last_updated.strftime("%Y-%m-%dT%H:%M:%SZ"),
         }
-
-    @staticmethod
-    async def get_team_standings(style):
-        """
-            Creates a list of standings when given a particular style
-            accepts Division names, Conference names, and Team names
-            returns a list of standings objects and the location of the given
-            style in the list
-        """
-        async with aiohttp.ClientSession() as session:
-            async with session.get(BASE_URL + "/api/v1/standings") as resp:
-                data = await resp.json()
-        conference = ["eastern", "western", "conference"]
-        division = ["metropolitan", "atlantic", "pacific", "central", "division"]
-        if style.lower() in conference:
-            e = [
-                await Standings.from_json(
-                    team, record["division"]["name"], record["conference"]["name"]
-                )
-                for record in data["records"]
-                for team in record["teamRecords"]
-                if record["conference"]["name"] == "Eastern"
-            ]
-            w = [
-                await Standings.from_json(
-                    team, record["division"]["name"], record["conference"]["name"]
-                )
-                for record in data["records"]
-                for team in record["teamRecords"]
-                if record["conference"]["name"] == "Western"
-            ]
-
-            index = 0
-            for div in [e, w]:
-                if div[0].conference.lower() == style and style != "conference":
-                    index = [e, w].index(div)
-            return [e, w], index
-        if style.lower() in division:
-            new_list = []
-            for record in data["records"]:
-                new_list.append(
-                    [
-                        await Standings.from_json(
-                            team, record["division"]["name"], record["conference"]["name"]
-                        )
-                        for team in record["teamRecords"]
-                    ]
-                )
-            index = 0
-            for div in new_list:
-                if div[0].division.lower() == style and style != "division":
-                    index = new_list.index(div)
-            return new_list, index
-        else:
-            all_teams = [
-                await Standings.from_json(
-                    team, record["division"]["name"], record["conference"]["name"]
-                )
-                for record in data["records"]
-                for team in record["teamRecords"]
-            ]
-            index = 0
-            for team in all_teams:
-                if team.name.lower() == style:
-                    index = all_teams.index(team)
-            return all_teams, index
-
-    @staticmethod
-    async def post_automatic_standings(bot):
-        """
-            Automatically update a standings embed with the latest stats
-            run when new games for the day is updated
-        """
-        log.debug("Updating Standings.")
-        config = hockey_config()
-        all_guilds = await config.all_guilds()
-        for guilds in all_guilds:
-            guild = bot.get_guild(guilds)
-            if guild is None:
-                continue
-            log.debug(guild.name)
-            if await config.guild(guild).post_standings():
-
-                search = await config.guild(guild).standings_type()
-                if search is None:
-                    continue
-                standings_channel = await config.guild(guild).standings_channel()
-                if standings_channel is None:
-                    continue
-                channel = bot.get_channel(standings_channel)
-                if channel is None:
-                    continue
-                standings_msg = await config.guild(guild).standings_msg()
-                if standings_msg is None:
-                    continue
-                message = await channel.get_message(standings_msg)
-
-                standings, page = await Standings.get_team_standings(search)
-                if search != "all":
-                    em = await Standings.build_standing_embed(standings, page)
-                else:
-                    em = await Standings.all_standing_embed(standings, page)
-                if message is not None:
-                    await message.edit(embed=em)
 
     @classmethod
     async def from_json(cls, data: dict, division: str, conference: str):
@@ -198,8 +76,115 @@ class Standings:
             data["goalsScored"],
             data["goalsAgainst"],
             data["wildCardRank"],
-            data["lastUpdated"],
+            datetime.strptime(data["lastUpdated"], "%Y-%m-%dT%H:%M:%SZ"),
         )
+
+
+class Standings(MixinMeta):
+
+    @staticmethod
+    async def get_team_standings(style) -> List[StandingsData]:
+        """
+            Creates a list of standings when given a particular style
+            accepts Division names, Conference names, and Team names
+            returns a list of standings objects and the location of the given
+            style in the list
+        """
+        async with aiohttp.ClientSession() as session:
+            async with session.get(BASE_URL + "/api/v1/standings") as resp:
+                data = await resp.json()
+        conference = ["eastern", "western", "conference"]
+        division = ["metropolitan", "atlantic", "pacific", "central", "division"]
+        if style.lower() in conference:
+            e = [
+                await StandingsData.from_json(
+                    team, record["division"]["name"], record["conference"]["name"]
+                )
+                for record in data["records"]
+                for team in record["teamRecords"]
+                if record["conference"]["name"] == "Eastern"
+            ]
+            w = [
+                await StandingsData.from_json(
+                    team, record["division"]["name"], record["conference"]["name"]
+                )
+                for record in data["records"]
+                for team in record["teamRecords"]
+                if record["conference"]["name"] == "Western"
+            ]
+
+            index = 0
+            for div in [e, w]:
+                if div[0].conference.lower() == style and style != "conference":
+                    index = [e, w].index(div)
+            return [e, w], index
+        if style.lower() in division:
+            new_list = []
+            for record in data["records"]:
+                new_list.append(
+                    [
+                        await StandingsData.from_json(
+                            team, record["division"]["name"], record["conference"]["name"]
+                        )
+                        for team in record["teamRecords"]
+                    ]
+                )
+            index = 0
+            for div in new_list:
+                if div[0].division.lower() == style and style != "division":
+                    index = new_list.index(div)
+            return new_list, index
+        else:
+            all_teams = [
+                await StandingsData.from_json(
+                    team, record["division"]["name"], record["conference"]["name"]
+                )
+                for record in data["records"]
+                for team in record["teamRecords"]
+            ]
+            index = 0
+            for team in all_teams:
+                if team.name.lower() == style:
+                    index = all_teams.index(team)
+            return all_teams, index
+
+    async def post_automatic_standings(self):
+        """
+            Automatically update a standings embed with the latest stats
+            run when new games for the day is updated
+        """
+        log.debug("Updating Standings.")
+        all_guilds = await self.config.all_guilds()
+        for guilds in all_guilds:
+            guild = self.get_guild(guilds)
+            if guild is None:
+                continue
+            log.debug(guild.name)
+            if await self.config.guild(guild).post_standings():
+
+                search = await self.config.guild(guild).standings_type()
+                if search is None:
+                    continue
+                standings_channel = await self.config.guild(guild).standings_channel()
+                if standings_channel is None:
+                    continue
+                channel = self.get_channel(standings_channel)
+                if channel is None:
+                    continue
+                standings_msg = await self.config.guild(guild).standings_msg()
+                if standings_msg is None:
+                    continue
+                message = await channel.get_message(standings_msg)
+
+                standings, page = await Standings.get_team_standings(search)
+                if search != "all":
+                    em = await Standings.build_standing_embed(standings, page)
+                else:
+                    em = await Standings.all_standing_embed(standings, page)
+                if message is not None:
+                    await message.edit(embed=em)
+
+    
 
     @staticmethod
     async def all_standing_embed(post_standings, page=0):

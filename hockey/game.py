@@ -10,41 +10,43 @@ from .standings import Standings
 import discord
 import logging
 from redbot.core.i18n import Translator
+from dataclasses import dataclass
 
 
 _ = Translator("Hockey", __file__)
 
 log = logging.getLogger("red.Hockey")
 
-
-class Game:
+@dataclass
+class GameData:
     """
         This is the object that handles game information
         game state updates and goal posts
     """
+    game_state: str
+    home_team: str
+    away_team: str
+    period: int
+    home_shots: int
+    away_shots: int
+    home_score: int
+    away_score: int
+    game_start: str
+    goals: list
+    home_goals: list
+    away_goals: list
+    home_abr: str
+    away_abr: str
+    period_ord: str
+    period_time_left: str
+    plays: list
+    first_star: str
+    second_star: str
+    third_star: str
 
     def __init__(
         self,
-        game_state: str,
-        home_team: str,
-        away_team: str,
-        period: int,
-        home_shots: int,
-        away_shots: int,
-        home_score: int,
-        away_score: int,
-        game_start: str,
-        goals: list,
-        home_goals: list,
-        away_goals: list,
-        home_abr: str,
-        away_abr: str,
-        period_ord: str,
-        period_time_left: str,
-        plays: list,
-        first_star: str,
-        second_star: str,
-        third_star: str,
+        
     ):
         super().__init__()
         self.game_state = game_state
@@ -116,6 +118,61 @@ class Game:
             "second_star": self.second_star,
             "third_star": self.third_star,
         }
+
+    @classmethod
+    async def from_json(cls, data: dict):
+        event = data["liveData"]["plays"]["allPlays"]
+        home_team = data["gameData"]["teams"]["home"]["name"]
+        away_team = data["gameData"]["teams"]["away"]["name"]
+        players = data["liveData"]["boxscore"]["teams"]["away"]["players"]
+        players.update(data["liveData"]["boxscore"]["teams"]["home"]["players"])
+        goals = [
+            await Goal.from_json(goal, players)
+            for goal in event
+            if goal["result"]["eventTypeId"] == "GOAL"
+            or (
+                goal["result"]["eventTypeId"] in ["SHOT", "MISSED_SHOT"]
+                and goal["about"]["ordinalNum"] == "SO"
+            )
+        ]
+
+        if "currentPeriodOrdinal" in data["liveData"]["linescore"]:
+            period_ord = data["liveData"]["linescore"]["currentPeriodOrdinal"]
+            period_time_left = data["liveData"]["linescore"]["currentPeriodTimeRemaining"]
+            events = data["liveData"]["plays"]["allPlays"]
+        else:
+            period_ord = "0"
+            period_time_left = "0"
+            events = ["."]
+        decisions = data["liveData"]["decisions"]
+        first_star = decisions["firstStar"]["fullName"] if "firstStar" in decisions else None
+        second_star = decisions["secondStar"]["fullName"] if "secondStar" in decisions else None
+        third_star = decisions["thirdStar"]["fullName"] if "thirdStar" in decisions else None
+
+        return cls(
+            data["gameData"]["status"]["abstractGameState"],
+            data["gameData"]["teams"]["home"]["name"],
+            data["gameData"]["teams"]["away"]["name"],
+            data["liveData"]["linescore"]["currentPeriod"],
+            data["liveData"]["linescore"]["teams"]["home"]["shotsOnGoal"],
+            data["liveData"]["linescore"]["teams"]["away"]["shotsOnGoal"],
+            data["liveData"]["linescore"]["teams"]["home"]["goals"],
+            data["liveData"]["linescore"]["teams"]["away"]["goals"],
+            data["gameData"]["datetime"]["dateTime"],
+            goals,
+            [goal for goal in goals if home_team in goal.team_name],
+            [goal for goal in goals if away_team in goal.team_name],
+            data["gameData"]["teams"]["home"]["abbreviation"],
+            data["gameData"]["teams"]["away"]["abbreviation"],
+            period_ord,
+            period_time_left,
+            events,
+            first_star,
+            second_star,
+            third_star,
+        )
+
+class Game(MixinMeta):
 
     @staticmethod
     async def get_games(team=None, start_date: datetime = None, end_date: datetime = None):
@@ -648,55 +705,4 @@ class Game:
             log.error(_("Error grabbing game data: "), exc_info=True)
             return
 
-    @classmethod
-    async def from_json(cls, data: dict):
-        event = data["liveData"]["plays"]["allPlays"]
-        home_team = data["gameData"]["teams"]["home"]["name"]
-        away_team = data["gameData"]["teams"]["away"]["name"]
-        players = data["liveData"]["boxscore"]["teams"]["away"]["players"]
-        players.update(data["liveData"]["boxscore"]["teams"]["home"]["players"])
-        goals = [
-            await Goal.from_json(goal, players)
-            for goal in event
-            if goal["result"]["eventTypeId"] == "GOAL"
-            or (
-                goal["result"]["eventTypeId"] in ["SHOT", "MISSED_SHOT"]
-                and goal["about"]["ordinalNum"] == "SO"
-            )
-        ]
-
-        if "currentPeriodOrdinal" in data["liveData"]["linescore"]:
-            period_ord = data["liveData"]["linescore"]["currentPeriodOrdinal"]
-            period_time_left = data["liveData"]["linescore"]["currentPeriodTimeRemaining"]
-            events = data["liveData"]["plays"]["allPlays"]
-        else:
-            period_ord = "0"
-            period_time_left = "0"
-            events = ["."]
-        decisions = data["liveData"]["decisions"]
-        first_star = decisions["firstStar"]["fullName"] if "firstStar" in decisions else None
-        second_star = decisions["secondStar"]["fullName"] if "secondStar" in decisions else None
-        third_star = decisions["thirdStar"]["fullName"] if "thirdStar" in decisions else None
-
-        return cls(
-            data["gameData"]["status"]["abstractGameState"],
-            data["gameData"]["teams"]["home"]["name"],
-            data["gameData"]["teams"]["away"]["name"],
-            data["liveData"]["linescore"]["currentPeriod"],
-            data["liveData"]["linescore"]["teams"]["home"]["shotsOnGoal"],
-            data["liveData"]["linescore"]["teams"]["away"]["shotsOnGoal"],
-            data["liveData"]["linescore"]["teams"]["home"]["goals"],
-            data["liveData"]["linescore"]["teams"]["away"]["goals"],
-            data["gameData"]["datetime"]["dateTime"],
-            goals,
-            [goal for goal in goals if home_team in goal.team_name],
-            [goal for goal in goals if away_team in goal.team_name],
-            data["gameData"]["teams"]["home"]["abbreviation"],
-            data["gameData"]["teams"]["away"]["abbreviation"],
-            period_ord,
-            period_time_left,
-            events,
-            first_star,
-            second_star,
-            third_star,
-        )
+    

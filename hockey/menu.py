@@ -54,9 +54,6 @@ async def hockey_menu(
     if not message:
         message = await ctx.send(embed=em)
         start_adding_reactions(message, DEFAULT_CONTROLS.keys())
-        # await message.add_reaction("⬅")
-        # await message.add_reaction("❌")
-        # await message.add_reaction("➡")
     else:
         # message edits don't return the message object anymore lol
         await message.edit(embed=em)

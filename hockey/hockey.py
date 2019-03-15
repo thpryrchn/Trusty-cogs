@@ -4,19 +4,21 @@ import asyncio
 import json
 import yaml
 import logging
+from copy import copy
 from datetime import datetime, timedelta
 from io import BytesIO
 from urllib.parse import quote
 from redbot.core import commands, checks, Config
 from redbot.core.data_manager import cog_data_path
 from redbot.core.i18n import Translator, cog_i18n
+from redbot.core.utils.chat_formatting import box
 from .teamentry import TeamEntry
 from .menu import hockey_menu
 from .embeds import *
 from .helper import *
 from .errors import *
 from .game import Game
-from .pickems import Pickems
+from .pickems import Pickems, PickemsData
 from .standings import Standings
 from .gamedaychannels import GameDayChannels
 from .constants import *
@@ -33,12 +35,12 @@ _ = Translator("Hockey", __file__)
 
 log = logging.getLogger("red.Hockey")
 
-__version__ = "2.3.2"
+__version__ = "2.4.0"
 __author__ = "TrustyJAID"
 
 
 @cog_i18n(_)
-class Hockey(getattr(commands, "Cog", object)):
+class Hockey(Pickems, Standings, GameDayChannels, commands.Cog):
     """
         Gather information and post goal updates for NHL hockey teams
     """
@@ -134,7 +136,7 @@ class Hockey(getattr(commands, "Cog", object)):
 
                     if game.game_state == "Final" and game.first_star is not None:
                         try:
-                            await Pickems.set_guild_pickem_winner(self.bot, game)
+                            await self.set_guild_pickem_winner(self.bot, game)
                         except Exception as e:
                             log.error(_("Pickems Set Winner error: "), exc_info=True)
                         to_remove.append(link)
@@ -144,7 +146,7 @@ class Hockey(getattr(commands, "Cog", object)):
                 await asyncio.sleep(60)
             log.debug(_("Games Done Playing"))
             try:
-                await Pickems.tally_leaderboard(self.bot)
+                await self.tally_leaderboard()
             except Exception as e:
                 log.error(_("Error tallying leaderboard:"), exc_info=True)
                 pass
@@ -169,7 +171,7 @@ class Hockey(getattr(commands, "Cog", object)):
         if not await self.config.created_gdc():
             if datetime.now().weekday() == 6:
                 try:
-                    await Pickems.reset_weekly(self.bot)
+                    await self.reset_weekly(self.bot)
                 except Exception as e:
                     log.error(_("Error reseting the weekly leaderboard: "), exc_info=True)
             try:
@@ -179,7 +181,7 @@ class Hockey(getattr(commands, "Cog", object)):
 
             log.debug(_("Checking GDC"))
 
-            await GameDayChannels.check_new_gdc(self.bot)
+            await self.check_new_gdc(self.bot)
             await self.config.created_gdc.set(True)
 
     async def on_raw_reaction_add(self, payload):
@@ -192,7 +194,7 @@ class Hockey(getattr(commands, "Cog", object)):
 
         if pickems_list is None:
             return
-        pickems = [Pickems.from_json(p) for p in pickems_list]
+        pickems = [PickemsData.from_json(p) for p in pickems_list]
         if len(pickems) == 0:
             return
         try:
@@ -235,7 +237,7 @@ class Hockey(getattr(commands, "Cog", object)):
                         pass
         if is_pickems_vote:
             pickems_list = [p.to_json() for p in pickems]
-            await self.config.guild(guild).pickems.set(pickems_list)
+            await self.config.guild(guild).self.set(pickems_list)
 
     async def change_custom_emojis(self, attachments):
         """
@@ -358,175 +360,9 @@ class Hockey(getattr(commands, "Cog", object)):
                 else:
                     await ctx.send(msg + "```")
 
-    @commands.group()
-    @checks.mod_or_permissions(manage_channels=True)
-    @commands.guild_only()
-    async def gdc(self, ctx):
-        """
-            Game Day Channel setup for the server
+    
 
-            You can setup only a single team or all teams for the server
-            Game day channels are deleted and created on the day after the game is played
-            usually around 9AM PST
-        """
-        if ctx.invoked_subcommand is None:
-            guild = ctx.message.guild
-            create_channels = await self.config.guild(guild).create_channels()
-            if create_channels is None:
-                return
-            team = await self.config.guild(guild).gdc_team()
-            if team is None:
-                team = "None"
-            channels = await self.config.guild(guild).gdc()
-            category = self.bot.get_channel(await self.config.guild(guild).category())
-            delete_gdc = await self.config.guild(guild).delete_gdc()
-            if category is not None:
-                category = category.name
-            if channels is not None:
-                created_channels = ""
-                for channel in channels:
-                    chn = self.bot.get_channel(channel)
-                    if chn is not None:
-                        if ctx.channel.permissions_for(guild.me).embed_links:
-                            created_channels += chn.mention
-                        else:
-                            created_channels += "#" + chn.name
-                    else:
-                        created_channels += "<#{}>\n".format(channel)
-                if len(channels) == 0:
-                    created_channels = "None"
-            else:
-                created_channels = "None"
-            if not ctx.channel.permissions_for(guild.me).embed_links:
-                msg = (
-                    _("```GDC settings for")
-                    + guild.name
-                    + "\n"
-                    + _("Create Game Day Channels:")
-                    + create_channels
-                    + "\n"
-                    + _("Delete Game Day Channels: ")
-                    + delete_gdc
-                    + "\n"
-                    + _("Team:")
-                    + team
-                    + "\n"
-                    + _("Current Channels:")
-                    + created_channels
-                    + "```"
-                )
-                await ctx.send(msg)
-            if ctx.channel.permissions_for(guild.me).embed_links:
-                em = discord.Embed(title=_("GDC settings for ") + guild.name)
-                em.colour = await self.bot.db.color()
-                em.add_field(name=_("Create Game Day Channels"), value=str(create_channels))
-                em.add_field(name=_("Delete Game Day Channels"), value=str(delete_gdc))
-                em.add_field(name=_("Team"), value=str(team))
-                em.add_field(name=_("Current Channels"), value=created_channels)
-                await ctx.send(embed=em)
-
-    #######################################################################
-    # All Game Day Channel Commands
-
-    @gdc.command(name="delete")
-    async def gdc_delete(self, ctx):
-        """
-            Delete all current game day channels for the server
-        """
-        if await self.config.guild(ctx.guild).create_channels():
-            await GameDayChannels.delete_gdc(self.bot, ctx.guild)
-        await ctx.send(_("Game day channels deleted."))
-
-    @gdc.command(name="create")
-    async def gdc_create(self, ctx):
-        """
-            Creates the next gdc for the server
-        """
-
-        if await self.config.guild(ctx.guild).create_channels():
-            await GameDayChannels.create_gdc(self.bot, ctx.guild)
-        await ctx.send(_("Game day channels created."))
-
-    @gdc.command(name="toggle")
-    async def gdc_toggle(self, ctx):
-        """
-            Toggles the game day channel creation on this server
-        """
-        guild = ctx.message.guild
-        cur_setting = not await self.config.guild(guild).create_channels()
-        verb = _("will") if cur_setting else _("won't")
-        msg = _("Game day channels ") + verb + _(" be created on this server.")
-        await self.config.guild(guild).create_channels.set(cur_setting)
-        await ctx.send(msg)
-
-    @gdc.command(name="category")
-    async def gdc_category(self, ctx, category: discord.CategoryChannel):
-        """
-            Change the category for channel creation. Channel is case sensitive.
-        """
-        guild = ctx.message.guild
-
-        cur_setting = await self.config.guild(guild).category()
-
-        msg = _("Game day channels will be created in ")
-        await self.config.guild(guild).category.set(category.id)
-        await ctx.send(msg + category.name)
-
-    @gdc.command(name="autodelete")
-    async def gdc_autodelete(self, ctx):
-        """
-            Toggle's auto deletion of game day channels.
-        """
-        guild = ctx.message.guild
-
-        cur_setting = await self.config.guild(guild).delete_gdc()
-        verb = _("won't") if cur_setting else _("will")
-        msg = (
-            _("Game day channels ")
-            + verb
-            + _(" be deleted on this server.\n")
-            + _("Note, this may not happen until the next set of games.")
-        )
-        await self.config.guild(guild).delete_gdc.set(not cur_setting)
-        await ctx.send(msg)
-
-    @gdc.command(name="setup")
-    async def gdc_setup(
-        self,
-        ctx,
-        team: HockeyTeams,
-        category: discord.CategoryChannel = None,
-        delete_gdc: bool = True,
-    ):
-        """
-            Setup game day channels for a single team or all teams
-            
-            Required parameters:
-            `team` must use quotes if a space is in the name will search for partial team name
-            Optional Parameters:
-            `category` must use quotes if a space is in the name will default to current category
-            `delete_gdc` will tell the bot whether or not to delete game day channels automatically
-            must be either `True` or `False` and a category must be provided
-        """
-        guild = ctx.message.guild
-        if guild is None:
-            await ctx.send("This needs to be done in a server.")
-            return
-        if category is None:
-            category = guild.get_channel(ctx.message.channel.category_id)
-        if not category.permissions_for(guild.me).manage_channels:
-            await ctx.send(_("I don't have manage channels permission!"))
-            return
-        await self.config.guild(guild).category.set(category.id)
-        await self.config.guild(guild).gdc_team.set(team)
-        await self.config.guild(guild).delete_gdc.set(delete_gdc)
-        if team.lower() != "all":
-            await GameDayChannels.create_gdc(self.bot, guild)
-        else:
-            game_list = await Game.get_games()
-            for game in game_list:
-                await GameDayChannels.create_gdc(self.bot, guild, game)
-        await ctx.send(_("Game Day Channels for ") + team + _("setup in ") + category.name)
+    
 
     #######################################################################
     # All Hockey setup commands
@@ -565,17 +401,10 @@ class Hockey(getattr(commands, "Cog", object)):
             del leaderboard[str(user.id)]
             leaderboard[str(user.id)] = {"season": season, "weekly": weekly, "total": total}
         await self.config.guild(ctx.guild).leaderboard.set(leaderboard)
-        msg = (
-            user.display_name
-            + _(" now has ")
-            + season
-            + _(" points on the season, ")
-            + weekly
-            + _(" points for the week,")
-            + _(" and ")
-            + total
-            + _(" votes overall.")
-        )
+        msg = _(
+            "{user} now has {season} points on the season,"
+            "{weekly} points for the week, and {total} votes overall."
+        ).format(user=user.display_name, season=season, weekly=weekly, total=total)
         await ctx.send(msg)
 
     @hockeyset_commands.command(name="poststandings", aliases=["poststanding"])
@@ -892,7 +721,7 @@ class Hockey(getattr(commands, "Cog", object)):
                 )
             )
             # Create new pickems object for the game
-            await Pickems.create_pickem_object(ctx.guild, new_msg, ctx.channel, game)
+            await self.create_pickem_object(ctx.guild, new_msg, ctx.channel, game)
             if ctx.channel.permissions_for(ctx.guild.me).add_reactions:
                 try:
                     await new_msg.add_reaction(game.away_emoji[2:-1])
@@ -1094,7 +923,7 @@ class Hockey(getattr(commands, "Cog", object)):
         """
             Manually tally the leaderboard
         """
-        await Pickems.tally_leaderboard(self.bot)
+        await self.tally_leaderboard(self.bot)
         await ctx.send(_("Leaderboard tallying complete."))
 
     @hockeyset_commands.command(hidden=True)
@@ -1112,16 +941,10 @@ class Hockey(getattr(commands, "Cog", object)):
             check_day = now + delta
             games = await Game.get_games(None, check_day, check_day)
             for game in games:
-                await Pickems.set_guild_pickem_winner(self.bot, game)
+                await self.set_guild_pickem_winner(self.bot, game)
         await ctx.send(_("Pickems winners set."))
 
-    @gdc.command(hidden=True, name="test")
-    @checks.is_owner()
-    async def test_gdc(self, ctx):
-        """
-            Test checking for new game day channels
-        """
-        await GameDayChannels.check_new_gdc(self.bot)
+    
 
     @hockeyset_commands.command()
     @checks.is_owner()
@@ -1214,33 +1037,7 @@ class Hockey(getattr(commands, "Cog", object)):
         await self.config.teams.set(all_teams)
         await ctx.send(_("Saved game data reset."))
 
-    @gdc.command()
-    @checks.is_owner()
-    async def setcreated(self, ctx, created: bool):
-        """
-            Sets whether or not the game day channels have been created
-        """
-        await self.config.created_gdc.set(created)
-        await ctx.send(_("created_gdc set to ") + str(created))
-
-    @gdc.command()
-    @checks.is_owner()
-    async def cleargdc(self, ctx):
-        """
-            Checks for manually deleted channels from the GDC channel list 
-            and removes them
-        """
-        guild = ctx.message.guild
-        good_channels = []
-        for channels in await self.config.guild(guild).gdc():
-            channel = self.bot.get_channel(channels)
-            if channel is None:
-                await self.config._clear_scope(Config.CHANNEL, str(channels))
-                log.info("Removed the following channels" + str(channels))
-                continue
-            else:
-                good_channels.append(channel.id)
-        await self.config.guild(guild).gdc.set(good_channels)
+    
 
     @hockeyset_commands.command()
     @checks.is_owner()
@@ -1322,7 +1119,7 @@ class Hockey(getattr(commands, "Cog", object)):
         """
             Clears the servers current pickems object list
         """
-        await self.config.guild(ctx.guild).pickems.set([])
+        await self.config.guild(ctx.guild).self.set([])
         await ctx.send(_("All pickems removed on this server."))
 
     @hockeyset_commands.command()
@@ -1333,6 +1130,313 @@ class Hockey(getattr(commands, "Cog", object)):
         """
         await self.config.guild(ctx.guild).leaderboard.set({})
         await ctx.send(_("Server leaderboard reset."))
+
+    @hockeyset_commands.command()
+    @checks.admin_or_permissions(manage_roles=True)
+    async def createteamroles(self, ctx):
+        """
+            Creates all team roles on a server with team colours
+        """
+        for name, team in TEAMS.items():
+            try:
+                colour = discord.Colour(int(TEAMS[name]["home"].replace("#", ""), 16))
+                await ctx.guild.create_role(name=name, colour=colour)
+            except Exception as e:
+                log.error("error making role", exc_info=True)
+                pass
+        await ctx.tick()
+
+    @hockeyset_commands.command()
+    @checks.is_owner()
+    async def roleassign(self, ctx, channel:discord.TextChannel):
+        """
+            Create /r/hockeys Role assign page
+        """
+        msg1 = (
+            "To join a team, simply click the corresponding reaction and the flair will be added to your user.\n\n"
+            "To leave a team, simply click the corresponding reaction again and the flair will be removed.\n\n"
+            "Note: rapidly clicking reactions over and over again will not only cause the bot to disregard your actions, but attract the attention of the moderation team and may lead to disciplinary action.\n\n"
+        )
+        await channel.send(msg1 + box("NHL TEAM FLAIR", lang="yaml"))
+        # flair1 = await channel.send()
+        metro = await channel.send("**__Metropolitan Division__**")
+        atlantic = await channel.send("**__Atlantic Division__**")
+        central = await channel.send("**__Central Division__**")
+        pacific = await channel.send("**__Pacific Division__**")
+        flair2 = await channel.send(box("NON-PING TEAM FLAIR", lang="yaml"))
+        cmetro = await channel.send("**__Metropolitan Division__**")
+        catlantic = await channel.send("**__Atlantic Division__**")
+        ccentral = await channel.send("**__Central Division__**")
+        cpacific = await channel.send("**__Pacific Division__**")
+        iihf = await channel.send(box("IIHF TEAMS", lang="yaml"))
+        non_nhl_leagues = await channel.send(box("NON-NHL LEAGUES", lang="yaml"))
+        non_nhl_roles = await channel.send(box("NON-NHL ROLES", lang="yaml"))
+        for team in TEAMS:
+            try:
+                role = [r for r in ctx.guild.roles if r.name.lower() == team.lower()][0]
+            except:
+                continue
+            try:
+                crole = ctx.guild.get_role(TEAMS[team]["crole"])
+            except:
+                continue
+            if crole is None:
+                crole = role
+            if TEAMS[team]["division"] == "Metropolitan":
+                await self.make_fake_message(ctx, metro, channel, role, team)
+                await asyncio.sleep(2)
+                await self.make_fake_message(ctx, cmetro, channel, crole, team)
+                await asyncio.sleep(2)
+            if TEAMS[team]["division"] == "Atlantic":
+                await self.make_fake_message(ctx, atlantic, channel, role, team)
+                await asyncio.sleep(2)
+                await self.make_fake_message(ctx, catlantic, channel, crole, team)
+                await asyncio.sleep(2)
+            if TEAMS[team]["division"] == "Central":
+                await self.make_fake_message(ctx, central, channel, role, team)
+                await asyncio.sleep(2)
+                await self.make_fake_message(ctx, ccentral, channel, crole, team)
+                await asyncio.sleep(2)
+            if TEAMS[team]["division"] == "Pacific":
+                await self.make_fake_message(ctx, pacific, channel, role, team)
+                await asyncio.sleep(2)
+                await self.make_fake_message(ctx, cpacific, channel, crole, team)
+                await asyncio.sleep(2)
+
+    @hockeyset_commands.command()
+    @checks.is_owner()
+    async def oilersassign(self, ctx, channel:discord.TextChannel):
+        """
+            Create /r/hockeys Role assign page
+        """
+        await channel.send(box("NHL TEAM FLAIR", lang="yaml"))
+        # flair1 = await channel.send()
+        west = await channel.send("**__Western Conference__**")
+        east = await channel.send("**__Eastern Conference__**")
+        flair2 = await channel.send(box("GOAL NOTIFICATION TEAM FLAIR", lang="yaml"))
+        gwest = await channel.send("**__Western Conference__**")
+        geast = await channel.send("**__Eastern Conference__**")
+        for team in TEAMS:
+            try:
+                role = [r for r in ctx.guild.roles if r.name.lower() == team.lower()][0]
+            except:
+                continue
+            try:
+                grole = [r for r in ctx.guild.roles if r.name.lower() == (team.lower()+" goal")][0]
+            except:
+                continue
+            if TEAMS[team]["conference"] == "Western":
+                await self.make_fake_message(ctx, west, channel, role, team)
+                await asyncio.sleep(2)
+                await self.make_fake_message(ctx, gwest, channel, grole, team)
+                await asyncio.sleep(2)
+            if TEAMS[team]["conference"] == "Eastern":
+                await self.make_fake_message(ctx, east, channel, role, team)
+                await asyncio.sleep(2)
+                await self.make_fake_message(ctx, geast, channel, grole, team)
+                await asyncio.sleep(2)
+
+    async def make_fake_message(self, ctx, message, channel, role, team):
+        fake_msg = copy(ctx.message)
+        fake_msg2 = copy(ctx.message)
+        fake_msg3 = copy(ctx.message)
+        emoji = TEAMS[team]["emoji"]
+        fake_msg2.content = f"{ctx.prefix}roleset selfadd {role.id} true"
+        ctx.bot.dispatch("message", fake_msg2)
+        fake_msg3.content = f"{ctx.prefix}roleset selfrem {role.id} true"
+        ctx.bot.dispatch("message", fake_msg3)
+        fake_msg.content = (
+            f"{ctx.prefix}rolebind {role.id} {channel.id} {message.id} <:{emoji}>"
+        )
+        ctx.bot.dispatch("message", fake_msg)
+        return True
+
+    async def make_fake_message_raw(self, ctx, message, channel, role, emoji):
+        fake_msg = copy(ctx.message)
+        fake_msg2 = copy(ctx.message)
+        fake_msg3 = copy(ctx.message)
+        fake_msg2.content = f"{ctx.prefix}roleset selfadd {role} true"
+        ctx.bot.dispatch("message", fake_msg2)
+        fake_msg3.content = f"{ctx.prefix}roleset selfrem {role} true"
+        ctx.bot.dispatch("message", fake_msg3)
+        fake_msg.content = (
+            f"{ctx.prefix}rolebind {role} {channel} {message} {emoji}"
+        )
+        ctx.bot.dispatch("message", fake_msg)
+        return True
+
+    @hockeyset_commands.command()
+    async def international(self, ctx, channel:discord.TextChannel):
+        """setup roles for international teams"""
+        intl = await channel.send(box("INTERNATIONAL TEAMS", lang="yaml"))
+        roles = {
+            551848676436344852: "🇦🇹",
+            266733944525815828: "🇨🇦",
+            267807230764646407: "🇨🇿",
+            267806533453217794: "🇩🇰",
+            267806632988246017: "🇫🇮",
+            267806815071371264: "🇫🇷",
+            267806426284425218: "🇩🇪",
+            439885792333135905: "🇬🇧",
+            267806576335781888: "🇮🇹",
+            267806488347541505: "🇱🇻",
+            267806776869519361: "🇳🇴",
+            267806187502698497: "🇷🇺",
+            267806359494328320: "🇸🇰",
+            267806279727185921: "🇸🇪",
+            267806682975961091: "🇨🇭",
+            266734007503421460: "🇺🇸",
+        }
+        intl2 = await channel.send(box("INTERNATIONAL TEAMS (CONTINUED)", lang="yaml"))
+        other = {
+            267806739070451714: "🇧🇾",
+            551848137090924554: "🇭🇺",
+            393476188938436608: "🇰🇿",
+            267806869056126977: "🇸🇮",
+            379512209467768832: "🇰🇷",
+            551853700583391262: "🇱🇹",
+        }
+        for role, emoji in roles.items():
+            await self.make_fake_message_raw(ctx, intl.id, channel.id, role, emoji)
+        for role, emoji in other.items():
+            await self.make_fake_message_raw(ctx, intl2.id, channel.id, role, emoji)
+
+
+
+
+    @hockeyset_commands.command()
+    @checks.is_owner()
+    async def metro(self, ctx, channel: discord.TextChannel, msg: int, colour: bool=False):
+        """Setup automatic rolebind for each role"""
+        for team in TEAMS:
+            if TEAMS[team]["division"] != "Metropolitan":
+                continue
+            try:
+                role = [r for r in ctx.guild.roles if r.name.lower() == team.lower()][0]
+            except:
+                continue
+            if colour:
+                try:
+                    role = ctx.guild.get_role(TEAMS[team]["crole"])
+                except:
+                    continue
+            fake_msg = copy(ctx.message)
+            fake_msg2 = copy(ctx.message)
+            fake_msg3 = copy(ctx.message)
+            emoji = TEAMS[team]["emoji"]
+            # await msg.add_reaction(emoji)
+            fake_msg2.content = f"{ctx.prefix}roleset selfadd {role.id} true"
+            ctx.bot.dispatch("message", fake_msg2)
+            fake_msg3.content = f"{ctx.prefix}roleset selfrem {role.id} true"
+            ctx.bot.dispatch("message", fake_msg3)
+            fake_msg.content = (
+                f"{ctx.prefix}rolebind {role.id} {channel.id} {msg} <:{emoji}>"
+            )
+            return True
+
+    @hockeyset_commands.command()
+    @checks.is_owner()
+    async def atlantic(self, ctx, channel: discord.TextChannel, msg: int, colour: bool=False):
+        """Setup automatic rolebind for each role"""
+        for team in TEAMS:
+            if TEAMS[team]["division"] != "Atlantic":
+                continue
+            try:
+                role = [r for r in ctx.guild.roles if r.name.lower() == team.lower()][0]
+            except:
+                continue
+            if colour:
+                try:
+                    role = ctx.guild.get_role(TEAMS[team]["crole"])
+                except:
+                    continue
+            fake_msg = copy(ctx.message)
+            fake_msg2 = copy(ctx.message)
+            fake_msg3 = copy(ctx.message)
+            emoji = TEAMS[team]["emoji"]
+            # await msg.add_reaction(emoji)
+            fake_msg2.content = f"{ctx.prefix}roleset selfadd {role.id} true"
+            ctx.bot.dispatch("message", fake_msg2)
+            fake_msg3.content = f"{ctx.prefix}roleset selfrem {role.id} true"
+            ctx.bot.dispatch("message", fake_msg3)
+            fake_msg.content = (
+                f"{ctx.prefix}rolebind {role.id} {channel.id} {msg} <:{emoji}>"
+            )
+            return True
+
+    @hockeyset_commands.command()
+    @checks.is_owner()
+    async def central(self, ctx, channel: discord.TextChannel, msg: int, colour: bool=False):
+        """Setup automatic rolebind for each role"""
+        for team in TEAMS:
+            if TEAMS[team]["division"] != "Central":
+                continue
+            try:
+                role = [r for r in ctx.guild.roles if r.name.lower() == team.lower()][0]
+            except:
+                continue
+            if colour:
+                try:
+                    role = ctx.guild.get_role(TEAMS[team]["crole"])
+                except:
+                    continue
+            fake_msg = copy(ctx.message)
+            fake_msg2 = copy(ctx.message)
+            fake_msg3 = copy(ctx.message)
+            emoji = TEAMS[team]["emoji"]
+            # await msg.add_reaction(emoji)
+            fake_msg2.content = f"{ctx.prefix}roleset selfadd {role.id} true"
+            ctx.bot.dispatch("message", fake_msg2)
+            fake_msg3.content = f"{ctx.prefix}roleset selfrem {role.id} true"
+            ctx.bot.dispatch("message", fake_msg3)
+            fake_msg.content = (
+                f"{ctx.prefix}rolebind {role.id} {channel.id} {msg} <:{emoji}>"
+            )
+            return True
+
+    @hockeyset_commands.command()
+    @checks.is_owner()
+    async def pacific(self, ctx, channel: discord.TextChannel, msg: int, colour: bool=False):
+        """Setup automatic rolebind for each role"""
+        for team in TEAMS:
+            if TEAMS[team]["division"] != "Pacific":
+                continue
+            try:
+                role = [r for r in ctx.guild.roles if r.name.lower() == team.lower()][0]
+            except:
+                continue
+            if colour:
+                try:
+                    role = ctx.guild.get_role(TEAMS[team]["crole"])
+                except:
+                    continue
+            fake_msg = copy(ctx.message)
+            fake_msg2 = copy(ctx.message)
+            fake_msg3 = copy(ctx.message)
+            emoji = TEAMS[team]["emoji"]
+            # await msg.add_reaction(emoji)
+            fake_msg2.content = f"{ctx.prefix}roleset selfadd {role.id} true"
+            ctx.bot.dispatch("message", fake_msg2)
+            fake_msg3.content = f"{ctx.prefix}roleset selfrem {role.id} true"
+            ctx.bot.dispatch("message", fake_msg3)
+            fake_msg.content = (
+                f"{ctx.prefix}rolebind {role.id} {channel.id} {msg} <:{emoji}>"
+            )
+
+            return True
+
+    @hockeyset_commands.command()
+    @checks.is_owner()
+    async def checkroles(self, ctx):
+        """
+            check the team colour roles
+        """
+        for name, team in TEAMS.items():
+            if "crole" not in team:
+                continue
+            role = ctx.guild.get_role(team["crole"])
+            if role is None:
+                log.info(name)
 
     def __unload(self):
         self.bot.loop.create_task(self.session.close())

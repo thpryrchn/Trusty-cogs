@@ -1,22 +1,14 @@
+from dataclasses import dataclass
+
+@dataclass
 class TeamEntry:
-    def __init__(
-        self,
-        game_state: str,
-        team_name: str,
-        period: int,
-        channel: list,
-        goal_id: dict,
-        created_channel: list,
-        game_start: str,
-    ):
-        super().__init__()
-        self.game_state = game_state
-        self.team_name = team_name
-        self.period = period
-        self.channel = channel
-        self.goal_id = goal_id
-        self.created_channel = created_channel
-        self.game_start = game_start
+    game_state: str
+    team_name: str
+    period: int
+    channel: list
+    goal_id: dict
+    created_channel: list
+    game_start: str
 
     def to_json(self) -> dict:
         return {
