@@ -11,7 +11,7 @@ You will see qposts listed.
 `[p]pipinstall  bs4`
 This is required for qposts to work.
 
-[p]cog install trusty qposts
+`[p]cog install trusty qposts`
 This Installs it.
 
 `[p]load qposts`
