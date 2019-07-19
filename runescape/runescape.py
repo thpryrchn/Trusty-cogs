@@ -47,7 +47,7 @@ class Runescape(commands.Cog):
             await ctx.send(box(page, lang="css"))
 
     @runescape.command()
-    async def set(self, ctx, RunescapeName):
+    async def set(self, ctx, *, RunescapeName: str):
         """Set your runescape name for easer commands."""
         user = self.bot.get_user(ctx.message.author.id)
         await self.config.user(user).rsn.set(RunescapeName)
@@ -224,5 +224,7 @@ class Runescape(commands.Cog):
         # em.set_footer(text="Offline", icon_url="https://upload.wikimedia.org/wikipedia/commons/thumb/0/0c/Red_pog.svg/64px-Red_pog.svg.png")
         return em
 
-    def __unload(self):
+    def cog_unload(self):
         self.bot.loop.create_task(self.session.close())
+
+    __unload = cog_unload

@@ -11,7 +11,14 @@ from redbot.core import commands, Config, modlog
 from redbot.core.i18n import Translator, cog_i18n
 
 _ = Translator("ExtendedModLog", __file__)
-logger = logging.getLogger("red.ExtendedModLog")
+logger = logging.getLogger("red.trusty-cogs.ExtendedModLog")
+listener = getattr(commands.Cog, "listener", None)  # red 3.0 backwards compatibility support
+below_red31 = False
+
+if listener is None:  # thanks Sinbad
+    below_red31 = True
+    def listener(name=None):
+        return lambda x: x
 
 
 class CommandPrivs(Converter):
@@ -89,6 +96,7 @@ class EventMixin:
                 raise RuntimeError("No Modlog set")
         return channel
 
+    @listener()
     async def on_command(self, ctx: commands.Context):
         guild = ctx.guild
         if guild is None:
@@ -102,7 +110,6 @@ class EventMixin:
         except RuntimeError:
             return
         time = ctx.message.created_at
-        cleanmsg = ctx.message.content
         message = ctx.message
         can_run = await self.member_can_run(ctx)
         command = ctx.message.content.replace(ctx.prefix, "")
@@ -134,8 +141,6 @@ class EventMixin:
         else:
             role = f"everyone\n{privs}"
 
-        for i in ctx.message.mentions:
-            cleanmsg = cleanmsg.replace(i.mention, str(i))
         infomessage = (
             f"{message.author.name}#{message.author.discriminator}"
             + _(" used ")
@@ -148,7 +153,7 @@ class EventMixin:
 
             embed = discord.Embed(
                 title=infomessage,
-                description=cleanmsg,
+                description=message.content,
                 colour=await self.get_colour(guild),
                 timestamp=time,
             )
@@ -160,18 +165,54 @@ class EventMixin:
             embed.set_author(name=author_title, icon_url=message.author.avatar_url)
             await channel.send(embed=embed)
         else:
-            clean_msg = f"{infomessage}\n`{cleanmsg}`"
-            await channel.send(clean_msg)
+            clean_msg = f"{infomessage}\n`{message.clean_content}`"
+            await channel.send(clean_msg[:2000])
+
+    @listener(name="on_raw_message_delete")
+    async def on_raw_message_delete_listener(self, payload, *, check_audit_log=True):
+        # custom name of method used, because this is only supported in Red 3.1+
+        guild_id = payload.guild_id
+        if guild_id is None:
+            return
+        guild = self.bot.get_guild(guild_id)
+        settings = await self.config.guild(guild).message_delete()
+        if not settings["enabled"]:
+            return
+        channel_id = payload.channel_id
+        if channel_id in await self.config.guild(guild).ignored_channels():
+            return
+        try:
+            channel = await self.modlog_channel(guild, "message_delete")
+        except RuntimeError:
+            return
+        message = payload.cached_message
+        if message is None:
+            if settings["cached_only"]:
+                return
+            message_channel = guild.get_channel(channel_id)
+            if channel.permissions_for(guild.me).embed_links:
+                embed = discord.Embed(
+                    description=_("*Message's content unknown.*"), colour=discord.Colour.dark_red()
+                )
+                embed.add_field(name=_("Channel"), value=message_channel.mention)
+                embed.set_author(name=_("Deleted Message"))
+                await channel.send(embed=embed)
+            else:
+                infomessage = _("Message was deleted in ") + message_channel.mention
+                await channel.send(f"{infomessage}\n*Message's content unknown.*")
+            return
+        await self._cached_message_delete(
+            message, guild, settings, channel, check_audit_log=check_audit_log
+        )
 
     async def on_message_delete(self, message):
+        # listener decorator isn't used here because cached messages
+        # are handled by on_raw_message_delete event in Red 3.1+
         guild = message.guild
         if guild is None:
             return
         settings = await self.config.guild(guild).message_delete()
         if not settings["enabled"]:
-            return
-        if message.author.bot and not settings["bots"]:
-            # return to ignore bot accounts if enabled
             return
         if message.channel.id in await self.config.guild(guild).ignored_channels():
             return
@@ -179,14 +220,19 @@ class EventMixin:
             channel = await self.modlog_channel(guild, "message_delete")
         except RuntimeError:
             return
+        await self._cached_message_delete(message, guild, settings, channel)
+
+    async def _cached_message_delete(
+        self, message, guild, settings, channel, *, check_audit_log=True
+    ):
+        if message.author.bot and not settings["bots"]:
+            # return to ignore bot accounts if enabled
+            return
         if message.content == "" and message.attachments == []:
             return
         time = message.created_at
-        cleanmsg = message.content
-        for i in message.mentions:
-            cleanmsg = cleanmsg.replace(i.mention, str(i))
         perp = None
-        if channel.permissions_for(guild.me).view_audit_log:
+        if channel.permissions_for(guild.me).view_audit_log and check_audit_log:
             action = discord.AuditLogAction.message_delete
             async for log in guild.audit_logs(limit=2, action=action):
                 same_chan = log.extra.channel.id == message.channel.id
@@ -219,7 +265,52 @@ class EventMixin:
             )
             await channel.send(embed=embed)
         else:
+            clean_msg = f"{infomessage}\n`{message.clean_content}`"
+            await channel.send(clean_msg[:2000])
+
+    @listener()
+    async def on_raw_bulk_message_delete(self, payload):
+        guild_id = payload.guild_id
+        if guild_id is None:
+            return
+        guild = self.bot.get_guild(guild_id)
+        settings = await self.config.guild(guild).message_delete()
+        if not settings["enabled"] or not settings["bulk_enabled"]:
+            return
+        channel_id = payload.channel_id
+        if channel_id in await self.config.guild(guild).ignored_channels():
+            return
+        message_channel = guild.get_channel(channel_id)
+        try:
+            channel = await self.modlog_channel(guild, "message_delete")
+        except RuntimeError:
+            return
+        message_amount = len(payload.message_ids)
+        if channel.permissions_for(guild.me).embed_links:
+            embed = discord.Embed(
+                description=message_channel.mention, colour=discord.Colour.dark_red()
+            )
+            embed.set_author(name=_("Bulk message delete"), icon_url=guild.icon_url)
+            embed.add_field(name=_("Channel"), value=message_channel.mention)
+            embed.add_field(name=_("Messages deleted"), value=message_amount)
+            await channel.send(embed=embed)
+        else:
+            infomessage = (
+                _("Bulk message delete in ")
+                + f"{message_channel.mention}, {message_amount}"
+                + _("messages deleted.")
+            )
             await channel.send(infomessage)
+        if not below_red31 and settings["bulk_individual"]:
+            for message in payload.cached_messages:
+                payload = discord.RawMessageDeleteEvent(
+                    {"id": message.id, "channel_id": channel_id, "guild_id": guild_id}
+                )
+                payload.cached_message = message
+                try:
+                    await self.on_raw_message_delete_listener(payload, check_audit_log=False)
+                except Exception:
+                    pass
 
     async def invite_links_loop(self):
         """Check every 5 minutes for updates to the invite links"""
@@ -299,6 +390,7 @@ class EventMixin:
                     break
         return possible_link
 
+    @listener()
     async def on_member_join(self, member):
         guild = member.guild
 
@@ -339,13 +431,14 @@ class EventMixin:
         else:
             msg = (
                 f":white_check_mark: **{member}** "
-                + _("joined the guild. Total users: ")
+                + _("joined the guild. Total members: ")
                 + str(users)
                 + "\n"
                 + possible_link
             )
             await channel.send(msg)
 
+    @listener()
     async def on_member_remove(self, member):
         guild = member.guild
 
@@ -360,14 +453,14 @@ class EventMixin:
         time = datetime.datetime.utcnow()
         perp = None
         reason = None
+        if channel.permissions_for(guild.me).view_audit_log:
+            action = discord.AuditLogAction.kick
+            async for log in guild.audit_logs(limit=5, action=action):
+                if log.target.id == member.id:
+                    perp = log.user
+                    reason = log.reason
+                    break
         if channel.permissions_for(guild.me).embed_links:
-            if channel.permissions_for(guild.me).view_audit_log:
-                action = discord.AuditLogAction.kick
-                async for log in guild.audit_logs(limit=5, action=action):
-                    if log.target.id == member.id:
-                        perp = log.user
-                        reason = log.reason
-                        break
             embed = discord.Embed(
                 description=member.mention, colour=discord.Colour.dark_green(), timestamp=time
             )
@@ -404,12 +497,10 @@ class EventMixin:
         p_msg = ""
         before_perms = {}
         after_perms = {}
-        for o in before.overwrites:
-            if o[0]:
-                before_perms[str(o[0].id)] = [i for i in o[1]]
-        for o in after.overwrites:
-            if o[0]:
-                after_perms[str(o[0].id)] = [i for i in o[1]]
+        for o, p in before.overwrites.items():
+            before_perms[str(o.id)] = [i for i in p]
+        for o, p in after.overwrites.items():
+            after_perms[str(o.id)] = [i for i in p]
         for entity in before_perms:
             entity_obj = before.guild.get_role(int(entity))
             if entity_obj is None:
@@ -441,6 +532,7 @@ class EventMixin:
                 continue
         return p_msg
 
+    @listener()
     async def on_guild_channel_create(self, new_channel):
         guild = new_channel.guild
         if not await self.config.guild(guild).channel_change.enabled():
@@ -473,7 +565,7 @@ class EventMixin:
             embed.add_field(name=_("Type"), value=_("Text"))
         if type(new_channel) == discord.CategoryChannel:
             msg += _("Category Channel Created")
-            embed.add_field(name=_("Type"), value=_("Text"))
+            embed.add_field(name=_("Type"), value=_("Category"))
         if type(new_channel) == discord.VoiceChannel:
             msg += _("Voice Channel Created")
             embed.add_field(name=_("Type"), value=_("Voice"))
@@ -488,6 +580,7 @@ class EventMixin:
         else:
             await channel.send(msg)
 
+    @listener()
     async def on_guild_channel_delete(self, old_channel):
         guild = old_channel.guild
         if not await self.config.guild(guild).channel_change.enabled():
@@ -501,7 +594,7 @@ class EventMixin:
         embed_links = channel.permissions_for(guild.me).embed_links
         time = datetime.datetime.utcnow()
         embed = discord.Embed(
-            description=old_channel.mention, timestamp=time, colour=discord.Colour.dark_teal()
+            description=old_channel.name, timestamp=time, colour=discord.Colour.dark_teal()
         )
         embed.set_author(name=_("Channel Deleted ") + str(old_channel.id))
         msg = _("Channel Deleted ") + str(old_channel.id) + "\n"
@@ -520,7 +613,7 @@ class EventMixin:
             embed.add_field(name=_("Type"), value=_("Text"))
         if type(old_channel) == discord.CategoryChannel:
             msg += _("Category Channel Deleted")
-            embed.add_field(name=_("Type"), value=_("Text"))
+            embed.add_field(name=_("Type"), value=_("Category"))
         if type(old_channel) == discord.VoiceChannel:
             msg += _("Voice Channel Deleted")
             embed.add_field(name=_("Type"), value=_("Voice"))
@@ -535,6 +628,7 @@ class EventMixin:
         else:
             await channel.send(msg)
 
+    @listener()
     async def on_guild_channel_update(self, before, after):
         guild = before.guild
         if not await self.config.guild(guild).channel_change.enabled():
@@ -665,6 +759,7 @@ class EventMixin:
                 p_msg += f"{p} Set to {change}\n"
         return p_msg
 
+    @listener()
     async def on_guild_role_update(self, before, after):
         guild = before.guild
         if not await self.config.guild(guild).role_change.enabled():
@@ -731,6 +826,7 @@ class EventMixin:
         else:
             await channel.send(msg)
 
+    @listener()
     async def on_guild_role_create(self, role):
         guild = role.guild
         if not await self.config.guild(guild).role_change.enabled():
@@ -770,6 +866,7 @@ class EventMixin:
         else:
             await channel.send(msg)
 
+    @listener()
     async def on_guild_role_delete(self, role):
         guild = role.guild
         if not await self.config.guild(guild).role_change.enabled():
@@ -809,6 +906,7 @@ class EventMixin:
         else:
             await channel.send(msg)
 
+    @listener()
     async def on_message_edit(self, before, after):
         guild = before.guild
         if guild is None:
@@ -822,12 +920,6 @@ class EventMixin:
             return
         if before.content == after.content:
             return
-        cleanbefore = before.content
-        for i in before.mentions:
-            cleanbefore = cleanbefore.replace(i.mention, str(i))
-        cleanafter = after.content
-        for i in after.mentions:
-            cleanafter = cleanafter.replace(i.mention, str(i))
         try:
             channel = await self.modlog_channel(guild, "message_edit")
         except RuntimeError:
@@ -857,12 +949,13 @@ class EventMixin:
                 + f"**{before.channel.mention}"
                 + f" **{before.author.name}#{before.author.discriminator}'s** "
                 + _("message has been edited.\nBefore: ")
-                + cleanbefore
+                + before.clean_content
                 + _("\nAfter: ")
-                + cleanafter
+                + after.clean_content
             )
             await channel.send(msg[:2000])
 
+    @listener()
     async def on_guild_update(self, before, after):
         guild = after
         if not await self.config.guild(guild).guild_change.enabled():
@@ -920,8 +1013,9 @@ class EventMixin:
         else:
             await channel.send(msg)
 
+    @listener()
     async def on_guild_emojis_update(self, guild, before, after):
-        if not await self.config.guild(guild).guild_change.enabled():
+        if not await self.config.guild(guild).emoji_change.enabled():
             return
         try:
             channel = await self.modlog_channel(guild, "emoji_change")
@@ -982,6 +1076,7 @@ class EventMixin:
         else:
             await channel.send(msg)
 
+    @listener()
     async def on_voice_state_update(self, member, before, after):
         guild = member.guild
         if not await self.config.guild(guild).voice_change.enabled():
@@ -1064,6 +1159,7 @@ class EventMixin:
         else:
             await channel.send(msg.replace(member.mention, str(member)))
 
+    @listener()
     async def on_member_update(self, before, after):
         guild = before.guild
         if not await self.config.guild(guild).user_change.enabled():

@@ -16,11 +16,15 @@ from redbot.core.utils.menus import start_adding_reactions
 from typing import Union, Optional, List, Tuple
 
 from .converters import FuzzyMember, GuildConverter, ChannelConverter
-from .time_utils import parse_timedelta, td_format
 
 
 _ = Translator("ServerStats", __file__)
-log = logging.getLogger("red.ServerStats")
+log = logging.getLogger("red.trusty-cogs.ServerStats")
+listener = getattr(commands.Cog, "listener", None)  # red 3.0 backwards compatibility support
+
+if listener is None:  # thanks Sinbad
+    def listener(name=None):
+        return lambda x: x
 
 
 @cog_i18n(_)
@@ -33,7 +37,7 @@ class ServerStats(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         default_global = {"join_channel": None}
-        self.config = Config.get_conf(self, 54_853_421_465_543)
+        self.config = Config.get_conf(self, 54853421465543)
         self.config.register_global(**default_global)
 
     @commands.command()
@@ -55,9 +59,14 @@ class ServerStats(commands.Cog):
             if not member.is_avatar_animated():
                 url = member.avatar_url_as(static_format="png")
             em.set_image(url=url)
-            em.set_author(
-                name=f"{member} {f'~ {member.nick}' if member.nick else ''}", icon_url=url, url=url
-            )
+            try:
+                em.set_author(
+                    name=f"{member} {f'~ {member.nick}' if member.nick else ''}", icon_url=url, url=url
+                )
+            except AttributeError:
+                em.set_author(
+                    name=f"{member}", icon_url=url, url=url
+                )
             embed_list.append(em)
         if not embed_list:
             await ctx.send(_("That user does not appear to exist on this server."))
@@ -67,6 +76,7 @@ class ServerStats(commands.Cog):
         else:
             await ctx.send(embed=embed_list[0])
 
+    @listener()
     async def on_guild_join(self, guild: discord.Guild):
         """Build and send a message containing serverinfo when the bot joins a new server"""
         channel_id = await self.config.join_channel()
@@ -105,25 +115,26 @@ class ServerStats(commands.Cog):
         verif = {0: "0 - None", 1: "1 - Low", 2: "2 - Medium", 3: "3 - Hard", 4: "4 - Extreme"}
 
         region = {
-            "vip-us-east": "__VIP__ US East :flag_us:",
-            "vip-us-west": "__VIP__ US West :flag_us:",
-            "vip-amsterdam": "__VIP__ Amsterdam :flag_nl:",
-            "eu-west": "EU West :flag_eu:",
-            "eu-central": "EU Central :flag_eu:",
-            "london": "London :flag_gb:",
-            "frankfurt": "Frankfurt :flag_de:",
-            "amsterdam": "Amsterdam :flag_nl:",
-            "us-west": "US West :flag_us:",
-            "us-east": "US East :flag_us:",
-            "us-south": "US South :flag_us:",
-            "us-central": "US Central :flag_us:",
-            "singapore": "Singapore :flag_sg:",
-            "sydney": "Sydney :flag_au:",
-            "brazil": "Brazil :flag_br:",
-            "hongkong": "Hong Kong :flag_hk:",
-            "russia": "Russia :flag_ru:",
-            "japan": "Japan :flag_jp:",
-            "southafrica": "South Africa :flag_za:",
+            "vip-us-east": _("__VIP__ US East") + " :flag_us:",
+            "vip-us-west": _("__VIP__ US West") + " :flag_us:",
+            "vip-amsterdam": _("__VIP__ Amsterdam") + " :flag_nl:",
+            "eu-west": _("EU West") + " :flag_eu:",
+            "eu-central": _("EU Central") + " :flag_eu:",
+            "london": _("London") + " :flag_gb:",
+            "frankfurt": _("Frankfurt") + " :flag_de:",
+            "amsterdam": _("Amsterdam") + " :flag_nl:",
+            "us-west": _("US West") + " :flag_us:",
+            "us-east": _("US East") + " :flag_us:",
+            "us-south": _("US South") + " :flag_us:",
+            "us-central": _("US Central") + " :flag_us:",
+            "singapore": _("Singapore") + " :flag_sg:",
+            "sydney": _("Sydney") + " :flag_au:",
+            "brazil": _("Brazil") + " :flag_br:",
+            "hongkong": _("Hong Kong") + " :flag_hk:",
+            "russia": _("Russia") + " :flag_ru:",
+            "japan": _("Japan") + " :flag_jp:",
+            "southafrica": _("South Africa") + " :flag_za:",
+            "india": _("India") + " :flag_in:",
         }
 
         format_kwargs = {
@@ -184,6 +195,10 @@ class ServerStats(commands.Cog):
                 text=text_channels, voice=voice_channels
             ),
         )
+        try:
+            verification_level = verif[int(guild.verification_level)]
+        except TypeError:
+            verification_level = str(guild.verification_level)
         em.add_field(
             name=_("Utility :"),
             value=_(
@@ -191,8 +206,8 @@ class ServerStats(commands.Cog):
                 "Verif. level : **{verif}**\nServer ID : **{id}**"
             ).format(
                 owner=guild.owner,
-                region=region[str(guild.region)],
-                verif=verif[int(guild.verification_level)],
+                region=str(guild.region) if guild.region not in region else region[str(guild.region)],
+                verif=verification_level,
                 id=guild.id,
             ),
         )
@@ -234,6 +249,7 @@ class ServerStats(commands.Cog):
             )
         return em
 
+    @listener()
     async def on_guild_remove(self, guild):
         """Build and send a message containing serverinfo when the bot leaves a server"""
         channel_id = await self.config.join_channel()
@@ -616,7 +632,7 @@ class ServerStats(commands.Cog):
             )
             await ctx.send(msg)
             return
-        member_list = await self.get_members_since(ctx, days, new_roles)
+        member_list = await self.get_members_since(ctx, days, None)
         send_msg = str(len(member_list)) + _(
             " estimated users to give the role. " "Would you like to reassign their roles now?"
         )
@@ -729,6 +745,8 @@ class ServerStats(commands.Cog):
         if type(member) is int:
             try:
                 member = await self.bot.get_user_info(member)
+            except AttributeError:
+                member = await self.bot.fetch_user(member)
             except discord.errors.NotFound:
                 await ctx.send(str(member) + _(" doesn't seem to be a discord user."))
                 return
@@ -806,6 +824,7 @@ class ServerStats(commands.Cog):
                 count = 0
                 await asyncio.sleep(0.1)
             msg += f"{server.name}: {len(server.members)}\n"
+            count += 1
         msg_list.append(msg)
         await menu(ctx, msg_list, DEFAULT_CONTROLS)
 
@@ -826,34 +845,9 @@ class ServerStats(commands.Cog):
                 count = 0
                 await asyncio.sleep(0.1)
             msg += f"{server.name}: {len(server.members)}\n"
+            count += 1
         msg_list.append(msg)
         await menu(ctx, msg_list, DEFAULT_CONTROLS)
-
-    @commands.command()
-    @checks.mod_or_permissions(manage_channels=True)
-    @commands.bot_has_permissions(manage_channels=True)
-    async def slowmode(self, ctx, channel: Optional[discord.TextChannel] = None, *, time: str):
-        """
-            Set a channels slowmode setting
-
-            `[channel]` is the channel you want to set slowmode on defaults to current channel
-            `<time>` the amount of time to set the slowmode to, maximum 6 hours.
-        """
-        if time in ["clear", "none", "remove", "rem"]:
-            time = "0 s"
-        time_delta = parse_timedelta(time)
-        if time_delta is None:
-            return await ctx.send(_("You must supply a ammount and time unit like `120 seconds`."))
-        if channel is None:
-            channel = ctx.channel
-        if time_delta.seconds < 0 or time_delta.seconds > 21600:
-            await ctx.send(_("You can only set a number between 0 and 21600 seconds"))
-            return
-        await channel.edit(slowmode_delay=time_delta.seconds)
-        msg = _("Slowmode set to `{time}` in {channel}").format(
-            time=td_format(time_delta), channel=channel.mention
-        )
-        await ctx.send(msg)
 
     @commands.group()
     @checks.admin_or_permissions(manage_guild=True)
@@ -1227,7 +1221,12 @@ class ServerStats(commands.Cog):
         """
         if channel is None:
             channel = ctx.message.channel
-        msg = await channel.get_message(message_id)
+        try:
+            msg = await channel.get_message(message_id)
+        except AttributeError:
+            msg = await channel.fetch_message(message_id)
+        except discord.errors.Forbidden:
+            return
         new_msg = ""
         for reaction in msg.reactions:
             async for user in reaction.users():

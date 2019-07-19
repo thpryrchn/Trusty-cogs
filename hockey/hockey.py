@@ -30,10 +30,12 @@ except ImportError:
 
 _ = Translator("Hockey", __file__)
 
-log = logging.getLogger("red.Hockey")
+log = logging.getLogger("red.trusty-cogs.Hockey")
+listener = getattr(commands.Cog, "listener", None)  # red 3.0 backwards compatibility support
 
-__version__ = "2.4.0"
-__author__ = "TrustyJAID"
+if listener is None:  # thanks Sinbad
+    def listener(name=None):
+        return lambda x: x
 
 
 @cog_i18n(_)
@@ -41,6 +43,8 @@ class Hockey(commands.Cog):
     """
         Gather information and post goal updates for NHL hockey teams
     """
+    __version__ = "2.4.1"
+    __author__ = "TrustyJAID"
 
     def __init__(self, bot):
         self.bot = bot
@@ -181,6 +185,7 @@ class Hockey(commands.Cog):
             await GameDayChannels.check_new_gdc(self.bot)
             await self.config.created_gdc.set(True)
 
+    @listener()
     async def on_raw_reaction_add(self, payload):
         channel = self.bot.get_channel(id=payload.channel_id)
         try:
@@ -196,7 +201,9 @@ class Hockey(commands.Cog):
             return
         try:
             msg = await channel.get_message(id=payload.message_id)
-        except Exception:
+        except AttributeError:
+            msg = await channel.fetch_message(id=payload.message_id)
+        except discord.errors.NotFound:
             return
         user = guild.get_member(payload.user_id)
         # log.debug(payload.user_id)
@@ -312,6 +319,10 @@ class Hockey(commands.Cog):
                     standings_chn = standings_channel.name
                 try:
                     standings_msg = await standings_channel.get_message(
+                        await self.config.guild(guild).standings_msg()
+                    )
+                except AttributeError:
+                    standings_msg = await standings_channel.fetch_message(
                         await self.config.guild(guild).standings_msg()
                     )
                 except discord.errors.NotFound:
@@ -722,7 +733,7 @@ class Hockey(commands.Cog):
             reddit  team    Team subreddit on Reddit
         """
         search = quote(search)
-        await ctx.send("https://hockeyhub.github.io/?search=" + search)
+        await ctx.send("https://hh.sbstp.ca/?search=" + search)
 
     @hockey_commands.command(name="role")
     @checks.bot_has_permissions(manage_roles=True)
@@ -1349,9 +1360,10 @@ class Hockey(commands.Cog):
         await self.config.guild(ctx.guild).leaderboard.set({})
         await ctx.send(_("Server leaderboard reset."))
 
-    def __unload(self):
+    def cog_unload(self):
         self.bot.loop.create_task(self.session.close())
         if getattr(self, "loop", None) is not None:
             self.loop.cancel()
 
-    __del__ = __unload
+    __del__ = cog_unload
+    __unload = cog_unload

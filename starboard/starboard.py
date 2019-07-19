@@ -9,9 +9,11 @@ from redbot.core import Config, checks, commands
 from redbot.core.i18n import Translator, cog_i18n
 
 _ = Translator("Starboard", __file__)
+listener = getattr(commands.Cog, "listener", None)  # red 3.0 backwards compatibility support
 
-__version__ = "2.1.0"
-__author__ = "TrustyJAID"
+if listener is None:  # thanks Sinbad
+    def listener(name=None):
+        return lambda x: x
 
 
 @cog_i18n(_)
@@ -19,6 +21,8 @@ class Starboard(commands.Cog):
     """
         Create a starboard to *pin* those special comments
     """
+    __version__ = "2.1.1"
+    __author__ = "TrustyJAID"
 
     def __init__(self, bot):
         self.bot = bot
@@ -176,7 +180,7 @@ class Starboard(commands.Cog):
     async def update_starboard(self, ctx):
         """
             This is to update all previous starboards
-            to the new starboard storage method keeping as many 
+            to the new starboard storage method keeping as many
             settings as possible
             This works for all guilds
         """
@@ -248,10 +252,14 @@ class Starboard(commands.Cog):
             channel = ctx.message.channel
         try:
             msg = await channel.get_message(msg_id)
-        except:
+        except AttributeError:
+            msg = await ctx.channel.fetch_message(msg_id)
+        except discord.errors.NotFound:
             error_msg = _("That message doesn't appear to exist in the specified channel.")
-            await ctx.send(error_msg)
-            return
+            return await ctx.send(error_msg)
+        except discord.errors.Forbidden:
+            error_msg = _("I do not have permission to read this channels history.")
+            return await ctx.send(error_msg)
         try:
             starboard = await self.get_starboard_from_name(guild, name)
         except NoStarboardError:
@@ -278,7 +286,10 @@ class Starboard(commands.Cog):
             same_msg = messages.original_message == msg.id
             same_channel = messages.original_channel == channel.id
             if same_msg and same_channel and messages.new_message:
-                msg_edit = await star_channel.get_message(messages.new_message)
+                try:
+                    msg_edit = await star_channel.get_message(messages.new_message)
+                except AttributeError:
+                    msg_edit = await star_channel.fetch_message(messages.new_message)
                 count_msg = f"{starboard.emoji} **#{count}**"
                 await msg_edit.edit(content=count_msg)
                 return
@@ -550,7 +561,7 @@ class Starboard(commands.Cog):
             starboard.colour = colour.value
         await self.save_starboard(guild, starboard)
         msg = _("Starboard `{name}` colour set to `{colour}`.").format(
-            name=starboard.name, 
+            name=starboard.name,
             colour=starboard.colour
         )
         await ctx.send(msg)
@@ -658,7 +669,7 @@ class Starboard(commands.Cog):
             em = msg.embeds[0]
             if msg.content != "":
                 if em.description != discord.Embed.Empty:
-                    em.description = "{}\n\n{}".format(msg.content, em.description)
+                    em.description = "{}\n\n{}".format(msg.content, em.description)[:2048]
                 else:
                     em.description = msg.content
                 if not author.bot:
@@ -704,13 +715,19 @@ class Starboard(commands.Cog):
     async def get_count(self, message_entry, emoji):
         orig_channel = self.bot.get_channel(message_entry.original_channel)
         new_channel = self.bot.get_channel(message_entry.new_channel)
-        orig_msg = await orig_channel.get_message(message_entry.original_message)
+        try:
+            orig_msg = await orig_channel.get_message(message_entry.original_message)
+        except AttributeError:
+            orig_msg = await orig_channel.fetch_message(message_entry.original_message)
         orig_reaction = [r for r in orig_msg.reactions if str(r.emoji) == str(emoji)]
         try:
-            new_msg = orig_msg = await new_channel.get_message(message_entry.new_message)
-            new_reaction = [r for r in orig_msg.reactions if str(r.emoji) == str(emoji)]
+            try:
+                new_msg = await new_channel.get_message(message_entry.new_message)
+            except AttributeError:
+                new_msg = await new_channel.fetch_message(message_entry.new_message)
+            new_reaction = [r for r in new_msg.reactions if str(r.emoji) == str(emoji)]
             reactions = orig_reaction + new_reaction
-        except:
+        except discord.errors.NotFound:
             reactions = orig_reaction
         unique_users = []
         for reaction in reactions:
@@ -735,16 +752,46 @@ class Starboard(commands.Cog):
             return True
         return False
 
+    @listener()
     async def on_raw_reaction_add(self, payload):
+        await self._update_stars(payload)
+
+    @listener()
+    async def on_raw_reaction_remove(self, payload):
+        await self._update_stars(payload)
+
+    @listener()
+    async def on_raw_reaction_clear(self, payload):
         channel = self.bot.get_channel(id=payload.channel_id)
         try:
             guild = channel.guild
-        except:
+        except AttributeError:
             # DMChannels don't have guilds
             return
         try:
+            msg = await channel.fetch_message(id=payload.message_id)
+        except AttributeError:
             msg = await channel.get_message(id=payload.message_id)
-        except:
+        except discord.errors.NotFound:
+            return
+        starboards = await self.config.guild(guild).starboards()
+        for name, s_board in starboards.items():
+            starboard = StarboardEntry.from_json(s_board)
+            star_channel = self.bot.get_channel(starboard.channel)
+            await self._loop_messages(payload, starboard, star_channel, msg)
+
+    async def _update_stars(self, payload):
+        channel = self.bot.get_channel(id=payload.channel_id)
+        try:
+            guild = channel.guild
+        except AttributeError:
+            # DMChannels don't have guilds
+            return
+        try:
+            msg = await channel.fetch_message(id=payload.message_id)
+        except AttributeError:
+            msg = await channel.get_message(id=payload.message_id)
+        except discord.errors.NotFound:
             return
         member = guild.get_member(payload.user_id)
         if not await self.config.guild(guild).starboards() or member.bot:
@@ -765,27 +812,8 @@ class Starboard(commands.Cog):
             if member.id == msg.author.id and not starboard.selfstar:
                 # allow mods, admins and owner to automatically star messages
                 return
-            for messages in [StarboardMessage.from_json(m) for m in starboard.messages]:
-                same_msg = messages.original_message == msg.id
-                same_channel = messages.original_channel == channel.id
-                starboard_msg = messages.new_message == msg.id
-                starboard_channel = messages.new_channel == channel.id
-
-                if not messages.new_message or not messages.new_channel:
-                    continue
-                if (guild.id, msg.id) in self.message_list:
-                    # This is to help prevent double posting starboard messages
-                    return
-                if (same_msg and same_channel) or (starboard_msg and starboard_channel):
-                    count = await self.get_count(messages, payload.emoji)
-                    try:
-                        msg_edit = await star_channel.get_message(messages.new_message)
-                    except:
-                        # starboard message may have been deleted
-                        return
-                    count_msg = f"{payload.emoji} **#{count}**"
-                    await msg_edit.edit(content=count_msg)
-                    return
+            if await self._loop_messages(payload, starboard, star_channel, msg):
+                return
             try:
                 reaction = [r for r in msg.reactions if str(r.emoji) == str(payload.emoji)][0]
                 count = reaction.count
@@ -807,3 +835,40 @@ class Starboard(commands.Cog):
             )
             await self.save_starboard_messages(guild, star_message, starboard)
             self.message_list.remove((guild.id, payload.message_id))
+
+    async def _loop_messages(self, payload, starboard, star_channel, msg):
+        guild = star_channel.guild
+        for messages in (StarboardMessage.from_json(m) for m in starboard.messages):
+            same_msg = messages.original_message == msg.id
+            same_channel = messages.original_channel == payload.channel_id
+            starboard_msg = messages.new_message == msg.id
+            starboard_channel = messages.new_channel == payload.channel_id
+
+            if not messages.new_message or not messages.new_channel:
+                continue
+            if (guild.id, msg.id) in self.message_list:
+                # This is to help prevent double posting starboard messages
+                return True
+            if (same_msg and same_channel) or (starboard_msg and starboard_channel):
+                count = await self.get_count(messages, starboard.emoji)
+                try:
+                    msg_edit = await star_channel.get_message(messages.new_message)
+                except AttributeError:
+                    msg_edit = await star_channel.fetch_message(messages.new_message)
+                except (discord.errors.NotFound, discord.errors.Forbidden):
+                    # starboard message may have been deleted
+                    return True
+                if count < starboard.threshold:
+                    self.message_list.append((guild.id, payload.message_id))
+                    star_message = StarboardMessage(
+                        msg.id, payload.channel_id, None, None, msg.author.id
+                    )
+
+                    await self.save_starboard_messages(guild, star_message, starboard)
+                    self.message_list.remove((guild.id, payload.message_id))
+                    await msg_edit.delete()
+                    return True
+                count_msg = f"{starboard.emoji} **#{count}**"
+                await msg_edit.edit(content=count_msg)
+                return True
+        return False

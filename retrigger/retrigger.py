@@ -24,7 +24,7 @@ from .converters import (
 from .triggerhandler import TriggerHandler
 
 
-log = logging.getLogger("red.ReTrigger")
+log = logging.getLogger("red.trusty-cogs.ReTrigger")
 _ = Translator("ReTrigger", __file__)
 
 
@@ -35,7 +35,7 @@ class ReTrigger(TriggerHandler, commands.Cog):
     """
 
     __author__ = "TrustyJAID"
-    __version__ = "2.6.6"
+    __version__ = "2.7.3"
 
     def __init__(self, bot):
         self.bot = bot
@@ -49,6 +49,7 @@ class ReTrigger(TriggerHandler, commands.Cog):
             "add_role_logs": False,
             "remove_role_logs": False,
             "filter_logs": False,
+            "bypass": False,
         }
         self.config.register_guild(**default_guild)
         self.re_pool = Pool(maxtasksperchild=2)
@@ -451,6 +452,8 @@ class ReTrigger(TriggerHandler, commands.Cog):
             return await ctx.send(_("Trigger `{name}` doesn't exist.").format(name=trigger))
         if not await self.can_edit(ctx.author, trigger):
             return await ctx.send(_("You are not authorized to edit this trigger."))
+        if trigger.multi_payload:
+            return await ctx.send(_("You cannot edit multi triggers response."))
         if "text" not in trigger.response_type:
             return await ctx.send(_("That trigger cannot be edited this way."))
         trigger.text = text
@@ -460,6 +463,28 @@ class ReTrigger(TriggerHandler, commands.Cog):
         self.triggers[ctx.guild.id].append(trigger)
         msg = _("Trigger {name} text changed to `{text}`")
         await ctx.send(msg.format(name=trigger.name, text=text))
+
+    @_edit.command(name="ignorecommands")
+    @checks.mod_or_permissions(manage_messages=True)
+    async def edit_ignore_commands(
+        self, ctx: commands.Context, trigger: TriggerExists
+    ):
+        """
+            Toggle the trigger ignoring command messages entirely.
+
+            `<trigger>` is the name of the trigger
+        """
+        if type(trigger) is str:
+            return await ctx.send(_("Trigger `{name}` doesn't exist.").format(name=trigger))
+        if not await self.can_edit(ctx.author, trigger):
+            return await ctx.send(_("You are not authorized to edit this trigger."))
+        trigger.ignore_commands = not trigger.ignore_commands
+        async with self.config.guild(ctx.guild).trigger_list() as trigger_list:
+            trigger_list[trigger.name] = await trigger.to_json()
+        await self.remove_trigger_from_cache(ctx.guild, trigger)
+        self.triggers[ctx.guild.id].append(trigger)
+        msg = _("Trigger {name} ignoring commands set to `{text}`")
+        await ctx.send(msg.format(name=trigger.name, text=trigger.ignore_commands))
 
     @_edit.command(name="command", aliases=["cmd"])
     @checks.mod_or_permissions(manage_messages=True)
@@ -476,6 +501,8 @@ class ReTrigger(TriggerHandler, commands.Cog):
             return await ctx.send(_("Trigger `{name}` doesn't exist.").format(name=trigger))
         if not await self.can_edit(ctx.author, trigger):
             return await ctx.send(_("You are not authorized to edit this trigger."))
+        if trigger.multi_payload:
+            return await ctx.send(_("You cannot edit multi triggers response."))
         cmd_list = command.split(" ")
         existing_cmd = self.bot.get_command(cmd_list[0])
         if existing_cmd is None:
@@ -506,6 +533,8 @@ class ReTrigger(TriggerHandler, commands.Cog):
             return await ctx.send(_("Trigger `{name}` doesn't exist.").format(name=trigger))
         if not await self.can_edit(ctx.author, trigger):
             return await ctx.send(_("You are not authorized to edit this trigger."))
+        if trigger.multi_payload:
+            return await ctx.send(_("You cannot edit multi triggers response."))
         for role in roles:
             if role >= ctx.me.top_role:
                 return await ctx.send(_("I can't assign roles higher than my own."))
@@ -550,6 +579,29 @@ class ReTrigger(TriggerHandler, commands.Cog):
         emoji_s = [f"<{e}>" for e in emojis if len(e) > 5] + [e for e in emojis if len(e) < 5]
         await ctx.send(msg.format(name=trigger.name, emojis=humanize_list(emoji_s)))
 
+    @retrigger.command(hidden=True)
+    @checks.is_owner()
+    async def bypass(self, ctx: commands.Context, bypass: bool):
+        """Bypass patterns being kicked from memory until reload"""
+        msg = await ctx.send(
+            _(
+                "Bypassing this could cause the bot to become unstable or allow "
+                "bad regex patterns to continue to exist causing slow downs and "
+                "even fatal crashes on the bot. Do you wish to continue?"
+            )
+        )
+        start_adding_reactions(msg, ReactionPredicate.YES_OR_NO_EMOJIS)
+        pred = ReactionPredicate.yes_or_no(msg, user=ctx.author)
+        try:
+            await ctx.bot.wait_for("reaction_add", check=pred, timeout=30)
+        except asyncio.TimeoutError:
+            return await ctx.send(_("Not bypassing regex pattern filtering."))
+        if pred.result:
+            await self.config.guild(ctx.guild).bypass.set(bypass)
+            await ctx.tick()
+        else:
+            await ctx.send(_("Not bypassing regex pattern filtering."))
+
     @retrigger.command()
     async def list(self, ctx: commands.Context, trigger: TriggerExists = None):
         """
@@ -585,7 +637,7 @@ class ReTrigger(TriggerHandler, commands.Cog):
             await self.remove_trigger_from_cache(ctx.guild, trigger)
             await ctx.send(_("Trigger `") + trigger.name + _("` removed."))
         else:
-            await ctx.send(_("Trigger `") + trigger + _("` doesn't exist."))
+            await ctx.send(_("Trigger `") + str(trigger) + _("` doesn't exist."))
 
     @retrigger.command()
     @checks.mod_or_permissions(manage_messages=True)
@@ -713,8 +765,16 @@ class ReTrigger(TriggerHandler, commands.Cog):
         if ctx.message.attachments != []:
             attachment_url = ctx.message.attachments[0].url
             filename = await self.save_image_location(attachment_url, guild)
+            if not filename:
+                return await ctx.send(
+                    _("That is not a valid file link.")
+                )
         if image_url is not None:
             filename = await self.save_image_location(image_url, guild)
+            if not filename:
+                return await ctx.send(
+                    _("That is not a valid file link.")
+                )
         else:
             msg = await self.wait_for_image(ctx)
             if not msg or not msg.attachments:
@@ -754,7 +814,7 @@ class ReTrigger(TriggerHandler, commands.Cog):
         filename = await self.wait_for_multiple_images(ctx)
 
         new_trigger = Trigger(
-            name, regex, ["randimage"], author, 0, filename, None, [], [], {}, []
+            name, regex, ["randimage"], author, 0, filename, None, [], [], {}, [], ctx.message.id
         )
         if ctx.guild.id not in self.triggers:
             self.triggers[ctx.guild.id] = []

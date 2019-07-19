@@ -8,7 +8,14 @@ from .eventmixin import EventMixin, CommandPrivs
 
 inv_settings = {
     "message_edit": {"enabled": False, "channel": None, "bots": False},
-    "message_delete": {"enabled": False, "channel": None, "bots": False},
+    "message_delete": {
+        "enabled": False,
+        "channel": None,
+        "bots": False,
+        "bulk_enabled": False,
+        "bulk_individual": False,
+        "cached_only": True,
+    },
     "user_change": {"enabled": False, "channel": None},
     "role_change": {"enabled": False, "channel": None},
     "voice_change": {"enabled": False, "channel": None},
@@ -177,7 +184,7 @@ class ExtendedModLog(EventMixin, commands.Cog):
         """
         if channel is not None:
             channel = channel.id
-        settings = await self.config.guild(ctx.guild).message_edit.channel.set(channel)
+        await self.config.guild(ctx.guild).message_edit.channel.set(channel)
         await ctx.tick()
 
     @_modlog.group(name="join")
@@ -213,7 +220,7 @@ class ExtendedModLog(EventMixin, commands.Cog):
         """
         if channel is not None:
             channel = channel.id
-        settings = await self.config.guild(ctx.guild).user_join.channel.set(channel)
+        await self.config.guild(ctx.guild).user_join.channel.set(channel)
         await ctx.tick()
 
     @_modlog.group(name="guild")
@@ -247,7 +254,7 @@ class ExtendedModLog(EventMixin, commands.Cog):
         """
         if channel is not None:
             channel = channel.id
-        settings = await self.config.guild(ctx.guild).guild_change.channel.set(channel)
+        await self.config.guild(ctx.guild).guild_change.channel.set(channel)
         await ctx.tick()
 
     @_modlog.group(name="channel", aliases=["channels"])
@@ -281,7 +288,7 @@ class ExtendedModLog(EventMixin, commands.Cog):
         """
         if channel is not None:
             channel = channel.id
-        settings = await self.config.guild(ctx.guild).channel_change.channel.set(channel)
+        await self.config.guild(ctx.guild).channel_change.channel.set(channel)
         await ctx.tick()
 
     @_modlog.group(name="leave")
@@ -309,11 +316,11 @@ class ExtendedModLog(EventMixin, commands.Cog):
     @_leave.command(name="channel")
     async def _leave_channel(self, ctx, channel: discord.TextChannel = None):
         """
-            Set custom channel for user leave logging
+            Set custom channel for member leave logging
         """
         if channel is not None:
             channel = channel.id
-        settings = await self.config.guild(ctx.guild).user_left.channel.set(channel)
+        await self.config.guild(ctx.guild).user_left.channel.set(channel)
         await ctx.tick()
 
     @_modlog.group(name="delete")
@@ -342,6 +349,8 @@ class ExtendedModLog(EventMixin, commands.Cog):
     async def _delete_bots(self, ctx):
         """
             Toggle message delete notifications for bot users
+
+            This will not affect delete notifications for messages that aren't in bot's cache.
         """
         guild = ctx.message.guild
         msg = _("Bot delete logs ")
@@ -353,6 +362,65 @@ class ExtendedModLog(EventMixin, commands.Cog):
             verb = _("disabled")
         await ctx.send(msg + verb)
 
+    @_delete.group(name="bulk")
+    async def _delete_bulk(self, ctx):
+        """
+            Bulk message delete logging settings
+        """
+        pass
+
+    @_delete_bulk.command(name="toggle")
+    async def _delete_bulk_toggle(self, ctx):
+        """
+            Toggle bulk message delete notifications
+        """
+        guild = ctx.message.guild
+        msg = _("Bulk message delete logs ")
+        if not await self.config.guild(guild).message_delete.bulk_enabled():
+            await self.config.guild(guild).message_delete.bulk_enabled.set(True)
+            verb = _("enabled")
+        else:
+            await self.config.guild(guild).message_delete.bulk_enabled.set(False)
+            verb = _("disabled")
+        await ctx.send(msg + verb)
+
+    @_delete_bulk.command(name="individual")
+    async def _delete_bulk_individual(self, ctx):
+        """
+            Toggle individual message delete notifications for bulk message delete
+
+            NOTE: In versions under Red 3.1 this setting doesn't work
+            and individual message delete notifications will show regardless of it.
+        """
+        guild = ctx.message.guild
+        msg = _("Individual message delete logs for bulk message delete ")
+        if not await self.config.guild(guild).message_delete.bulk_individual():
+            await self.config.guild(guild).message_delete.bulk_individual.set(True)
+            verb = _("enabled")
+        else:
+            await self.config.guild(guild).message_delete.bulk_individual.set(False)
+            verb = _("disabled")
+        await ctx.send(msg + verb)
+
+    @_delete.command(name="cachedonly")
+    async def _delete_cachedonly(self, ctx):
+        """
+            Toggle message delete notifications for non-cached messages
+
+            Delete notifications for non-cached messages
+            will only show channel info without content of deleted message or its author.
+            NOTE: This setting only works in Red 3.1+
+        """
+        guild = ctx.message.guild
+        msg = _("Delete logs for non-cached messages ")
+        if not await self.config.guild(guild).message_delete.cached_only():
+            await self.config.guild(guild).message_delete.cached_only.set(True)
+            verb = _("disabled")
+        else:
+            await self.config.guild(guild).message_delete.cached_only.set(False)
+            verb = _("enabled")
+        await ctx.send(msg + verb)
+
     @_delete.command(name="channel")
     async def _delete_channel(self, ctx, channel: discord.TextChannel = None):
         """
@@ -360,13 +428,13 @@ class ExtendedModLog(EventMixin, commands.Cog):
         """
         if channel is not None:
             channel = channel.id
-        settings = await self.config.guild(ctx.guild).message_delete.channel.set(channel)
+        await self.config.guild(ctx.guild).message_delete.channel.set(channel)
         await ctx.tick()
 
-    @_modlog.group(name="user", aliases=["member"])
+    @_modlog.group(name="member", aliases=["user"])
     async def _user(self, ctx):
         """
-            User logging settings
+            Member logging settings
         """
         pass
 
@@ -394,7 +462,7 @@ class ExtendedModLog(EventMixin, commands.Cog):
         """
         if channel is not None:
             channel = channel.id
-        settings = await self.config.guild(ctx.guild).user_change.channel.set(channel)
+        await self.config.guild(ctx.guild).user_change.channel.set(channel)
         await ctx.tick()
 
     @_modlog.group(name="roles", aliases=["role"])
@@ -428,7 +496,7 @@ class ExtendedModLog(EventMixin, commands.Cog):
         """
         if channel is not None:
             channel = channel.id
-        settings = await self.config.guild(ctx.guild).role_change.channel.set(channel)
+        await self.config.guild(ctx.guild).role_change.channel.set(channel)
         await ctx.tick()
 
     @_modlog.group(name="voice")
@@ -462,7 +530,7 @@ class ExtendedModLog(EventMixin, commands.Cog):
         """
         if channel is not None:
             channel = channel.id
-        settings = await self.config.guild(ctx.guild).voice_change.channel.set(channel)
+        await self.config.guild(ctx.guild).voice_change.channel.set(channel)
         await ctx.tick()
 
     @_modlog.group(name="emoji", aliases=["emojis"])
@@ -494,7 +562,7 @@ class ExtendedModLog(EventMixin, commands.Cog):
         """
         if channel is not None:
             channel = channel.id
-        settings = await self.config.guild(ctx.guild).emoji_change.channel.set(channel)
+        await self.config.guild(ctx.guild).emoji_change.channel.set(channel)
         await ctx.tick()
 
     @_modlog.group(name="command", aliases=["commands"])
@@ -545,7 +613,7 @@ class ExtendedModLog(EventMixin, commands.Cog):
         """
         if channel is not None:
             channel = channel.id
-        settings = await self.config.guild(ctx.guild).commands_used.channel.set(channel)
+        await self.config.guild(ctx.guild).commands_used.channel.set(channel)
         await ctx.tick()
 
     @_modlog.group()

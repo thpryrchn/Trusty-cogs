@@ -11,6 +11,11 @@ from redbot.core.i18n import Translator, cog_i18n
 
 
 _ = Translator("AddImage", __file__)
+listener = getattr(commands.Cog, "listener", None)  # red 3.0 backwards compatibility support
+
+if listener is None:  # thanks Sinbad
+    def listener(name=None):
+        return lambda x: x
 
 
 @cog_i18n(_)
@@ -125,6 +130,8 @@ class AddImage(commands.Cog):
         guild = channel.guild
         author = message.author
         mod = self.bot.get_cog("Mod")
+        if mod is None:
+            return True
         perms = channel.permissions_for(author)
         surpass_ignore = (
             isinstance(channel, discord.abc.PrivateChannel)
@@ -138,6 +145,7 @@ class AddImage(commands.Cog):
         chann_ignored = await mod.settings.channel(channel).ignored()
         return not (guild_ignored or chann_ignored and not perms.manage_channels)
 
+    @listener()
     async def on_message(self, message):
         if len(message.content) < 2 or message.guild is None:
             return
@@ -148,6 +156,8 @@ class AddImage(commands.Cog):
         try:
             prefix = await self.get_prefix(message)
         except ValueError:
+            return
+        if message.author.bot:
             return
         alias = await self.first_word(msg[len(prefix):])
         if not await self.local_perms(message):
@@ -424,5 +434,7 @@ class AddImage(commands.Cog):
         else:
             await self.save_image_location(ctx.message, name)
 
-    def __unload(self):
+    def cog_unload(self):
         self.bot.loop.create_task(self.session.close())
+
+    __unload = cog_unload

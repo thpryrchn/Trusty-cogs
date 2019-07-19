@@ -33,7 +33,7 @@ from redbot.core.data_manager import bundled_data_path, cog_data_path
 
 from .converter import ImageFinder
 
-log = logging.getLogger("red.NotSoBot")
+log = logging.getLogger("red.trusty-cogs.NotSoBot")
 
 try:
     import aalib
@@ -1028,8 +1028,8 @@ class NotSoBot(commands.Cog):
         file = discord.File(final, filename="vapewave.png")
         await ctx.send(file=file)
 
-    @commands.command(aliases=["achievement", "ach"])
-    async def mc(self, ctx, *, txt: str):
+    @commands.command(aliases=["achievement"])
+    async def minecraftachievement(self, ctx, *, txt: str):
         """Generate a Minecraft Achievement"""
         api = "https://mcgen.herokuapp.com/a.php?i=1&h=Achievement-{0}&t={1}".format(
             ctx.message.author.name, txt
@@ -1618,5 +1618,7 @@ class NotSoBot(commands.Cog):
         file = await ctx.bot.loop.run_in_executor(None, rotate_img, b, degrees)
         await ctx.send("Rotated: `{0}°`".format(degrees), file=file)
 
-    def __unload(self):
+    def cog_unload(self):
         self.bot.loop.create_task(self.session.close())
+
+    __unload = cog_unload

@@ -31,13 +31,13 @@ class Halo(commands.Cog):
             return await resp.json()
 
     @commands.group(name="halo5")
-    @checks.admin_or_permissions(manage_server=True)
+    @checks.admin_or_permissions(manage_guild=True)
     async def _halo5(self, ctx):
         """Get information from Halo 5"""
         pass
 
     @commands.group(name="halowars")
-    @checks.admin_or_permissions(manage_server=True)
+    @checks.admin_or_permissions(manage_guild=True)
     async def _halowars(self, ctx):
         """Get information from Halo Wars 2"""
         pass
@@ -236,5 +236,7 @@ class Halo(commands.Cog):
         await self.config.api_token.language.set(language)
         await ctx.send("Halo API credentials set!")
 
-    def __unload(self):
+    def cog_unload(self):
         self.bot.loop.create_task(self.session.close())
+
+    __unload = cog_unload

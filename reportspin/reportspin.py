@@ -17,7 +17,12 @@ from redbot.core.utils.tunnel import Tunnel
 
 _ = Translator("Reports", __file__)
 
-log = logging.getLogger("red.reports")
+log = logging.getLogger("red.trusty-cogs.reports")
+listener = getattr(commands.Cog, "listener", None)  # red 3.0 backwards compatibility support
+
+if listener is None:  # thanks Sinbad
+    def listener(name=None):
+        return lambda x: x
 
 
 @cog_i18n(_)
@@ -48,6 +53,7 @@ class Reports(commands.Cog):
         self.bot = bot
         self.config = Config.get_conf(self, 78631113035100160, force_registration=True)
         self.config.register_guild(**self.default_guild_settings)
+        self.config.init_custom("REPORT", 2)
         self.config.register_custom("REPORT", **self.default_report)
         self.antispam = {}
         self.user_cache = []
@@ -300,6 +306,7 @@ class Reports(commands.Cog):
                 except discord.NotFound:
                     pass
 
+    @listener()
     async def on_raw_reaction_add(self, payload):
         """
         oh dear....
@@ -319,6 +326,7 @@ class Reports(commands.Cog):
             )
             self.tunnel_store.pop(t[0], None)
 
+    @listener()
     async def on_message(self, message: discord.Message):
         for k, v in self.tunnel_store.items():
             topic = _("Re: ticket# {1} in {0.name}").format(*k)

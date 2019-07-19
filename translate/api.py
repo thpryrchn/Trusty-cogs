@@ -5,7 +5,7 @@ import asyncio
 import time
 import re
 
-from redbot.core import Config
+from redbot.core import Config, commands
 from redbot.core.bot import Red
 from redbot.core.i18n import Translator
 from discord.ext.commands.converter import Converter
@@ -16,9 +16,14 @@ from .errors import GoogleTranslateAPIError
 
 BASE_URL = "https://translation.googleapis.com"
 _ = Translator("Translate", __file__)
-log = logging.getLogger("red.Translate")
+log = logging.getLogger("red.trusty-cogs.Translate")
 
 FLAG_REGEX = re.compile(r"|".join(rf"{re.escape(f)}" for f in FLAGS.keys()))
+listener = getattr(commands.Cog, "listener", None)  # red 3.0 backwards compatibility support
+
+if listener is None:  # thanks Sinbad
+    def listener(name=None):
+        return lambda x: x
 
 
 class FlagTranslation(Converter):
@@ -124,6 +129,7 @@ class GoogleTranslateAPI:
             translated_text = data["data"]["translations"][0]["translatedText"]
             return translated_text
 
+    @listener()
     async def on_message(self, message):
         """
             Translates the message based off reactions
@@ -199,6 +205,7 @@ class GoogleTranslateAPI:
         if not cooldown["multiple"]:
             self.cache["translations"].append(translation.id)
 
+    @listener()
     async def on_raw_reaction_add(self, payload):
         """
             Translates the message based off reactions
@@ -208,10 +215,18 @@ class GoogleTranslateAPI:
             return
         channel = self.bot.get_channel(id=payload.channel_id)
         try:
-            guild = channel.guild
+            if channel.recipient:
+                return
+        except AttributeError:
+            pass
+        guild = channel.guild
+        user = guild.get_member(payload.user_id)
+        try:
+            message = await channel.fetch_message(id=payload.message_id)
+        except AttributeError:
             message = await channel.get_message(id=payload.message_id)
-            user = guild.get_member(payload.user_id)
-        except Exception:
+            return
+        except discord.errors.NotFound:
             return
         if user.bot:
             return
@@ -326,6 +341,8 @@ class GoogleTranslateAPI:
         guild = channel.guild
         author = message.author
         mod = self.bot.get_cog("Mod")
+        if mod is None:
+            return True
         perms = channel.permissions_for(author)
         surpass_ignore = (
             isinstance(channel, discord.abc.PrivateChannel)
